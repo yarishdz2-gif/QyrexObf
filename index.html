@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Luau Script Obfuscator</title>
+    <style>
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #0f111a;
+            color: #e0e0e0;
+            padding: 30px;
+        }
+        .container {
+            max-width: 950px;
+            margin: 0 auto;
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+        }
+        h1 {
+            color: #7aa2f7;
+            font-size: 24px;
+            text-align: center;
+        }
+        label {
+            font-size: 14px;
+            font-weight: bold;
+            color: #a9b1d6;
+        }
+        textarea {
+            width: 100%;
+            height: 220px;
+            background-color: #1a1b26;
+            color: #9ece6a;
+            border: 1px solid #414868;
+            border-radius: 8px;
+            padding: 12px;
+            font-family: 'Consolas', 'Courier New', monospace;
+            font-size: 13px;
+            resize: vertical;
+        }
+        textarea:focus {
+            outline: none;
+            border-color: #7aa2f7;
+        }
+        button {
+            background-color: #7aa2f7;
+            color: #15161e;
+            border: none;
+            padding: 14px;
+            font-size: 15px;
+            font-weight: bold;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: background 0.2s ease;
+        }
+        button:hover {
+            background-color: #bb9af7;
+        }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h1>Ofuscador de Scripts Luau</h1>
+    
+    <label for="inputScript">Código Fuente (Luau Original):</label>
+    <textarea id="inputScript" placeholder="Pega aquí el código en Luau..."></textarea>
+    
+    <button id="obfuscateBtn">Procesar u Ofuscar</button>
+    
+    <label for="outputScript">Resultado Ofuscado:</label>
+    <textarea id="outputScript" readonly placeholder="El código procesado aparecerá aquí..."></textarea>
+</div>
+
+<script>
+    document.getElementById('obfuscateBtn').addEventListener('click', async () => {
+        const inputScript = document.getElementById('inputScript').value;
+        const outputTextarea = document.getElementById('outputScript');
+        
+        if (!inputScript.trim()) {
+            alert('Por favor, ingresa un script para ofuscar.');
+            return;
+        }
+
+        outputTextarea.value = 'Procesando script...';
+
+        try {
+            const response = await fetch('/api/obfuscate', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ script: inputScript })
+            });
+
+            const data = await response.json();
+
+            if (response.ok && data.obfuscatedScript) {
+                outputTextarea.value = data.obfuscatedScript;
+            } else {
+                outputTextarea.value = 'Error: ' + (data.error || 'No se pudo procesar el código.');
+            }
+        } catch (error) {
+            outputTextarea.value = 'Error de conexión con el servidor.';
+        }
+    });
+</script>
+
+</body>
+</html>
