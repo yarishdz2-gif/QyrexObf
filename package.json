@@ -1,12 +1,12 @@
 {
-  "name": "ikgonavi-obfuscator",
-  "version": "2.0.0",
-  "description": "IKGONAVI Lua/Roblox obfuscator with anti-tamper fusion",
+  "name": "lua-obfuscator",
+  "version": "1.0.0",
+  "description": "Lua script obfuscator",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
   },
   "dependencies": {
-    "express": "^4.21.0"
+    "express": "^4.21.2"
   }
 }
