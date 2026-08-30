@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="robots" content="noindex,nofollow" />
+  <title>Qyrex Obfuscator</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: #06070b;
+      color: #f5f5f7;
+      font: 14px Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    body:before {
+      content: "";
+      position: fixed;
+      inset: -20%;
+      pointer-events: none;
+      background:
+        radial-gradient(circle at 15% 10%, rgba(124,92,255,.24), transparent 30%),
+        radial-gradient(circle at 90% 10%, rgba(0,212,255,.12), transparent 25%);
+      filter: blur(12px);
+    }
+    .shell {
+      position: relative;
+      max-width: 1100px;
+      margin: auto;
+      padding: 28px 20px 60px;
+    }
+    .nav {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 26px;
+    }
+    .brand {
+      display: flex;
+      gap: 11px;
+      align-items: center;
+      font-weight: 800;
+      font-size: 18px;
+    }
+    .mark {
+      width: 35px;
+      height: 35px;
+      border-radius: 11px;
+      display: grid;
+      place-items: center;
+      background: linear-gradient(135deg, #7c5cff, #31d7ff);
+      box-shadow: 0 0 35px rgba(124,92,255,.3);
+    }
+    .brand small {
+      display: block;
+      color: #77798a;
+      font-size: 10px;
+      letter-spacing: .12em;
+      text-transform: uppercase;
+    }
+    .panel {
+      border: 1px solid #282b38;
+      background: rgba(13,14,20,.9);
+      box-shadow: 0 28px 100px rgba(0,0,0,.35);
+      border-radius: 22px;
+      padding: 22px;
+      margin-bottom: 16px;
+    }
+    .panel h2 {
+      font-size: 15px;
+      margin: 0 0 8px;
+    }
+    .muted {
+      font-size: 12px;
+      color: #717489;
+      margin-bottom: 12px;
+    }
+    textarea {
+      width: 100%;
+      min-height: 220px;
+      border-radius: 14px;
+      border: 1px solid #282c39;
+      background: #080a0f;
+      color: #e8e8f0;
+      font: 12px/1.5 ui-monospace, SFMono-Regular, Consolas, monospace;
+      padding: 14px;
+      resize: vertical;
+    }
+    .row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-top: 14px;
+      align-items: center;
+    }
+    .btn {
+      border: 1px solid #292c39;
+      background: #10121a;
+      color: #f4f5f7;
+      padding: 10px 16px;
+      border-radius: 12px;
+      font-weight: 700;
+      cursor: pointer;
+    }
+    .btn.primary {
+      background: #f4f5f7;
+      color: #08090d;
+      border-color: #fff;
+    }
+    .btn:disabled {
+      opacity: .5;
+      cursor: not-allowed;
+    }
+    label.check {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      color: #a8abba;
+      font-size: 13px;
+      cursor: pointer;
+    }
+    .status {
+      margin-top: 10px;
+      font-size: 12px;
+      color: #83d9b3;
+      min-height: 18px;
+    }
+    .status.err { color: #f87171; }
+    .foot {
+      text-align: center;
+      color: #55596c;
+      font-size: 11px;
+      margin-top: 18px;
+    }
+    @media (max-width: 640px) {
+      .row { flex-direction: column; align-items: stretch; }
+      .btn { width: 100%; text-align: center; }
+    }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <nav class="nav">
+      <div class="brand">
+        <div class="mark">Q</div>
+        <div>Qyrex<small>Obfuscator</small></div>
+      </div>
+    </nav>
+
+    <section class="panel">
+      <h2>Código fuente</h2>
+      <div class="muted">Pega tu script Lua / Luau. Se ofusca en el navegador (no se sube a ningún servidor).</div>
+      <textarea id="input" placeholder="print('hola')"></textarea>
+      <div class="row">
+        <label class="check">
+          <input type="checkbox" id="envGate" checked />
+          Incluir Env Gate (anti-steal)
+        </label>
+        <button class="btn primary" id="btnObf">Ofuscar</button>
+        <button class="btn" id="btnClear">Limpiar</button>
+      </div>
+      <div class="status" id="status"></div>
+    </section>
+
+    <section class="panel">
+      <h2>Resultado</h2>
+      <div class="muted">Copia y usa con loadstring / executor.</div>
+      <textarea id="output" readonly placeholder="El código ofuscado aparece aquí..."></textarea>
+      <div class="row">
+        <button class="btn primary" id="btnCopy">Copiar</button>
+        <button class="btn" id="btnDownload">Descargar .lua</button>
+      </div>
+    </section>
+
+    <div class="foot">Qyrex polymorphic compatibility pack · estático para GitHub Pages</div>
+  </main>
+
+  <script src="obfuscator.js"></script>
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const input = $('input');
+    const output = $('output');
+    const status = $('status');
+    const envGate = $('envGate');
+
+    function setStatus(msg, isErr) {
+      status.textContent = msg || '';
+      status.className = 'status' + (isErr ? ' err' : '');
+    }
+
+    $('btnObf').onclick = function () {
+      try {
+        const src = input.value;
+        if (!src.trim()) {
+          setStatus('Código vacío', true);
+          return;
+        }
+        const result = window.QyrexObfuscator.obfuscate(src, {
+          envGate: envGate.checked
+        });
+        output.value = result;
+        setStatus('OK · ' + result.length + ' caracteres');
+      } catch (e) {
+        setStatus(e.message || String(e), true);
+      }
+    };
+
+    $('btnClear').onclick = function () {
+      input.value = '';
+      output.value = '';
+      setStatus('');
+    };
+
+    $('btnCopy').onclick = async function () {
+      const t = output.value;
+      if (!t) return;
+      try {
+        await navigator.clipboard.writeText(t);
+        setStatus('Copiado al portapapeles');
+      } catch {
+        output.select();
+        document.execCommand('copy');
+        setStatus('Copiado');
+      }
+    };
+
+    $('btnDownload').onclick = function () {
+      const t = output.value;
+      if (!t) return;
+      const blob = new Blob([t], { type: 'text/plain;charset=utf-8' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = 'obfuscated.lua';
+      a.click();
+      URL.revokeObjectURL(a.href);
+      setStatus('Descarga iniciada');
+    };
+  </script>
+</body>
+</html>
