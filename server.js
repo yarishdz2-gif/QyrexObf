@@ -1,7 +1,14 @@
 const express = require('express');
 const mongoose = require('mongoose');
 const crypto = require('crypto');
-const { obfuscate: qyrexObfuscate } = require('./obfuscate');
+let qyrexObfuscate = null;
+try {
+  ({ obfuscate: qyrexObfuscate } = require('./obfuscate'));
+} catch (e) {
+  // The local packer remains available for development and recovery.  Do not
+  // silently claim that a VM transform was applied when this module is absent.
+  console.warn('[SECURITY] ./obfuscate is unavailable; only local packaging can be used:', e.message);
+}
 const cors = require('cors');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
@@ -12,7 +19,81 @@ const fs = require('fs');
 const app = express();
 app.set('trust proxy', 1);
 
-const JWT_SECRET = process.env.JWT_SECRET || 'cambia-este-secret-por-uno-largo';
+const IS_PRODUCTION = process.env.NODE_ENV === 'production';
+
+function requireProductionSecret(name, configuredValue, bytes) {
+  const value = String(configuredValue || '').trim();
+  if (value) return value;
+  if (IS_PRODUCTION) {
+    throw new Error(`[SECURITY] ${name} is required in production.`);
+  }
+  const generated = crypto.randomBytes(bytes).toString('base64url');
+  console.warn(`[SECURITY] ${name} is not configured; using an ephemeral development secret.`);
+  return generated;
+}
+
+function normalizePublicBase(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  let parsed;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    throw new Error('[SECURITY] PUBLIC_BASE_URL must be an absolute URL.');
+  }
+  if (parsed.username || parsed.password || parsed.search || parsed.hash ||
+      (parsed.pathname && parsed.pathname !== '/')) {
+    throw new Error('[SECURITY] PUBLIC_BASE_URL must contain only scheme and host.');
+  }
+  if (parsed.protocol !== 'https:' && !(parsed.protocol === 'http:' && !IS_PRODUCTION)) {
+    throw new Error('[SECURITY] PUBLIC_BASE_URL must use HTTPS in production.');
+  }
+  return parsed.origin;
+}
+
+function parseOriginSet(value) {
+  const result = new Set();
+  for (const part of String(value || '').split(',')) {
+    const candidate = part.trim();
+    if (!candidate) continue;
+    try {
+      const origin = new URL(candidate).origin;
+      if (origin !== 'null') result.add(origin);
+    } catch {
+      throw new Error('[SECURITY] CORS_ORIGINS contains an invalid origin.');
+    }
+  }
+  return result;
+}
+
+function decodeSourceKey(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return null;
+  const key = /^[0-9a-f]{64}$/i.test(raw)
+    ? Buffer.from(raw, 'hex')
+    : Buffer.from(raw.replace(/-/g, '+').replace(/_/g, '/'), 'base64');
+  if (key.length !== 32) {
+    throw new Error('[SECURITY] SCRIPT_SOURCE_KEY must be exactly 32 bytes (base64/base64url or 64 hex chars).');
+  }
+  return key;
+}
+
+const JWT_SECRET = requireProductionSecret('JWT_SECRET', process.env.JWT_SECRET, 48);
+const PUBLIC_BASE_URL = normalizePublicBase(process.env.PUBLIC_BASE_URL);
+if (IS_PRODUCTION && !PUBLIC_BASE_URL) {
+  throw new Error('[SECURITY] PUBLIC_BASE_URL is required in production.');
+}
+const SOURCE_ENCRYPTION_KEY = decodeSourceKey(process.env.SCRIPT_SOURCE_KEY);
+if (IS_PRODUCTION && !SOURCE_ENCRYPTION_KEY) {
+  throw new Error('[SECURITY] SCRIPT_SOURCE_KEY is required in production.');
+}
+if (!SOURCE_ENCRYPTION_KEY) {
+  console.warn('[SECURITY] SCRIPT_SOURCE_KEY is not configured; source code is stored in plaintext in development only.');
+}
+
+const CORS_ORIGINS = parseOriginSet(process.env.CORS_ORIGINS);
+if (PUBLIC_BASE_URL) CORS_ORIGINS.add(PUBLIC_BASE_URL);
+
 const MONGO_URI = process.env.MONGO_URI || '';
 const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY || '';
 const OPENROUTER_MODEL = process.env.OPENROUTER_MODEL || 'openrouter/auto';
@@ -23,8 +104,34 @@ const DISCORD_REDIRECT_URI = process.env.DISCORD_REDIRECT_URI || 'https://qyrex.
 
 const PORT = process.env.PORT || 10000;
 
-if (!process.env.JWT_SECRET) {
-  console.warn('[SECURITY] JWT_SECRET is not set; configure a long random secret in production.');
+function protectSourceAtRest(source) {
+  const plaintext = String(source || '');
+  if (!SOURCE_ENCRYPTION_KEY) return plaintext;
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv('aes-256-gcm', SOURCE_ENCRYPTION_KEY, iv);
+  const ciphertext = Buffer.concat([cipher.update(plaintext, 'utf8'), cipher.final()]);
+  const tag = cipher.getAuthTag();
+  return ['enc', 'v1', iv.toString('base64url'), tag.toString('base64url'), ciphertext.toString('base64url')].join(':');
+}
+
+function revealSourceAtRest(value) {
+  const stored = String(value || '');
+  if (!stored.startsWith('enc:v1:')) return stored; // legacy rows stay readable until their next edit.
+  if (!SOURCE_ENCRYPTION_KEY) {
+    throw new Error('Source encryption is configured in the database but SCRIPT_SOURCE_KEY is unavailable.');
+  }
+  const parts = stored.split(':');
+  if (parts.length !== 5 || parts[0] !== 'enc' || parts[1] !== 'v1') {
+    throw new Error('Invalid encrypted source format.');
+  }
+  try {
+    const decipher = crypto.createDecipheriv('aes-256-gcm', SOURCE_ENCRYPTION_KEY,
+      Buffer.from(parts[2], 'base64url'));
+    decipher.setAuthTag(Buffer.from(parts[3], 'base64url'));
+    return Buffer.concat([decipher.update(Buffer.from(parts[4], 'base64url')), decipher.final()]).toString('utf8');
+  } catch {
+    throw new Error('Encrypted source cannot be authenticated. Check SCRIPT_SOURCE_KEY.');
+  }
 }
 
 app.use(helmet({
@@ -34,7 +141,18 @@ app.use(helmet({
   hidePoweredBy: true
 }));
 app.disable('x-powered-by');
-app.use(cors({ origin: true, credentials: true }));
+app.use(cors({
+  origin(origin, done) {
+    // Requests without Origin are non-browser clients (Roblox/executors, health checks).
+    // Browser credentials are allowed only for explicit origins.
+    if (!origin) return done(null, false);
+    return done(null, CORS_ORIGINS.has(origin));
+  },
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Authorization', 'Content-Type'],
+  maxAge: 600
+}));
 app.use(express.json({ limit: '2mb' }));
 
 function clientIp(req) {
@@ -435,77 +553,8 @@ const VipCode = mongoose.models.QrexVipCode || mongoose.model('QrexVipCode', new
   createdAt: { type: Date, default: Date.now }
 }));
 
-const BOOTSTRAP_VIP_KEYS = [
-  "QYREX-VIP-E13F-520E-164079",
-  "QYREX-VIP-4EC0-79EE-C72E92",
-  "QYREX-VIP-B1FC-1CFB-928515",
-  "QYREX-VIP-1BAB-2B17-E385B8",
-  "QYREX-VIP-D567-E462-7B586A",
-  "QYREX-VIP-E02B-C3AA-EAA997",
-  "QYREX-VIP-5F4A-B79E-093EC1",
-  "QYREX-VIP-705A-0FBE-F807A9",
-  "QYREX-VIP-B72D-EC5C-25EE03",
-  "QYREX-VIP-0357-C159-B37CAB",
-  "QYREX-VIP-6845-6F86-A6AA32",
-  "QYREX-VIP-CA88-B276-7AD428",
-  "QYREX-VIP-957A-8576-3005B1",
-  "QYREX-VIP-D9C8-404C-84374A",
-  "QYREX-VIP-B48C-511B-42069C",
-  "QYREX-VIP-2A97-76F0-DA3DAD",
-  "QYREX-VIP-37EA-A4DE-04F9CC",
-  "QYREX-VIP-51CE-DCDA-FE352C",
-  "QYREX-VIP-72F0-07BF-E27516",
-  "QYREX-VIP-51E8-954E-06A868",
-  "QYREX-VIP-7BAF-CE84-E9F4E9",
-  "QYREX-VIP-F062-E538-9CE073",
-  "QYREX-VIP-6CEC-4362-694B38",
-  "QYREX-VIP-6B16-BADE-FEEC7F",
-  "QYREX-VIP-A24C-CF36-F986A8",
-  "QYREX-VIP-F1E1-C28A-C1783B",
-  "QYREX-VIP-6257-6E1A-977A02",
-  "QYREX-VIP-7BF7-6E70-B9DD8B",
-  "QYREX-VIP-D1D9-942F-21883B",
-  "QYREX-VIP-3881-4939-143D40",
-  "QYREX-VIP-FA48-7E1B-4B5B46",
-  "QYREX-VIP-9580-EC09-A36C4E",
-  "QYREX-VIP-F956-FE91-0DA808",
-  "QYREX-VIP-F420-8961-E26A8A",
-  "QYREX-VIP-7A6A-826B-A3EB2E",
-  "QYREX-VIP-E8DB-1DFD-BD1F75",
-  "QYREX-VIP-DFBE-1551-F2D4EB",
-  "QYREX-VIP-6C8B-AAA9-F05A61",
-  "QYREX-VIP-7FFE-1676-3AD751",
-  "QYREX-VIP-814E-7BB8-080F11",
-  "QYREX-VIP-5FAE-B230-6419A9",
-  "QYREX-VIP-6A6A-C171-095C8D",
-  "QYREX-VIP-518A-D491-EEA75E",
-  "QYREX-VIP-4B53-B67B-C90B60",
-  "QYREX-VIP-427E-6264-1E8A12",
-  "QYREX-VIP-64AC-46DC-BAF4A9",
-  "QYREX-VIP-DAF5-C082-F3F0A0",
-  "QYREX-VIP-B595-BCB7-F9E64A",
-  "QYREX-VIP-57D6-79C1-8EFB99",
-  "QYREX-VIP-55FF-14BD-3FFB06"
-];
-
-async function seedVipKeysIfEmpty() {
-  try {
-    if (mongoose.connection.readyState !== 1) return;
-    const count = await VipCode.countDocuments();
-    if (count > 0) return;
-    const docs = BOOTSTRAP_VIP_KEYS.map(code => ({
-      code: code.toUpperCase(),
-      days: 10,
-      note: 'batch-50-bootstrap',
-      createdBy: 'system'
-    }));
-    await VipCode.insertMany(docs, { ordered: false }).catch(() => {});
-    console.log('VIP keys seeded:', docs.length);
-  } catch (e) {
-    console.error('VIP seed error', e.message);
-  }
-}
-mongoose.connection.on('connected', () => { seedVipKeysIfEmpty(); });
+// Never ship deterministic VIP codes.  Create keys through the authenticated
+// admin endpoint so their issuance is auditable and revocable.
 
 function genKey() {
   return crypto.randomUUID ? crypto.randomUUID() : [
@@ -540,21 +589,21 @@ async function signToken(user, req) {
   return jwt.sign({ sub: user._id.toString(), username: user.username, sid: sessionId }, JWT_SECRET, { expiresIn: '30d' });
 }
 
-function auth(req, res, next) {
+async function auth(req, res, next) {
   const h = req.headers.authorization || '';
   const token = h.startsWith('Bearer ') ? h.slice(7) : '';
   if (!token) return res.status(401).json({ error: 'No autorizado' });
   try {
-    req.user = jwt.verify(token, JWT_SECRET);
-    if (req.user.sid) {
-      Session.findOne({ sessionId: req.user.sid, userId: req.user.sub, revokedAt: null }).then(sess => {
-        if (!sess) return res.status(401).json({ error: 'Sesión cerrada o inválida' });
-        sess.lastSeenAt = new Date(); sess.save().catch(() => {});
-        next();
-      }).catch(() => res.status(401).json({ error: 'Sesión inválida' }));
-      return;
+    const user = jwt.verify(token, JWT_SECRET, { algorithms: ['HS256'] });
+    if (!user || !user.sub || !user.sid) {
+      return res.status(401).json({ error: 'Sesión inválida' });
     }
-    next();
+    const sess = await Session.findOne({ sessionId: user.sid, userId: user.sub, revokedAt: null });
+    if (!sess) return res.status(401).json({ error: 'Sesión cerrada o inválida' });
+    req.user = user;
+    sess.lastSeenAt = new Date();
+    sess.save().catch(() => {});
+    return next();
   } catch {
     return res.status(401).json({ error: 'Token invalido' });
   }
@@ -597,6 +646,14 @@ async function resolveObfuscated(source, mode) {
   }
 
   if (m === 'local') {
+    return { code: localObfuscate(src), doObfuscate: true, obfMode: 'local' };
+  }
+
+  if (typeof qyrexObfuscate !== 'function') {
+    // Never label local packaging as a VM transformation.  This keeps the
+    // service usable when an optional transformer is missing while making the
+    // downgrade explicit in the saved metadata and logs.
+    console.warn('[SECURITY] Requested VM/hybrid obfuscation without ./obfuscate; using local packaging.');
     return { code: localObfuscate(src), doObfuscate: true, obfMode: 'local' };
   }
 
@@ -981,13 +1038,22 @@ app.get('/api/scripts', auth, needMongo, async (req, res) => {
 app.get('/api/scripts/:id', auth, needMongo, async (req, res) => {
   const s = await Script.findOne({ id: req.params.id, ownerId: req.user.sub });
   if (!s) return res.status(404).json({ error: 'No encontrado' });
-  res.json(s);
+  try {
+    const response = s.toObject();
+    response.source = revealSourceAtRest(response.source);
+    res.json(response);
+  } catch (e) {
+    console.error('[SECURITY] source read failed', e.message);
+    res.status(503).json({ error: 'El código fuente protegido no está disponible en este servidor.' });
+  }
 });
 
 app.post('/api/scripts', auth, needMongo, async (req, res) => {
   try {
     const { name, description, source, keyMode, providerId } = req.body || {};
-    if (!name || !source) return res.status(400).json({ error: 'name y source requeridos' });
+    if (!name || typeof source !== 'string' || !source.trim()) {
+      return res.status(400).json({ error: 'name y source requeridos' });
+    }
 
     const me = await User.findById(req.user.sub);
     const prem = isPremiumUser(me);
@@ -1018,7 +1084,7 @@ app.post('/api/scripts', auth, needMongo, async (req, res) => {
       ownerId: req.user.sub,
       name,
       description: description || '',
-      source,
+      source: protectSourceAtRest(source),
       obfuscated: resolved.code,
       doObfuscate: resolved.doObfuscate,
       obfMode: resolved.obfMode,
@@ -1027,13 +1093,12 @@ app.post('/api/scripts', auth, needMongo, async (req, res) => {
       providerName
     });
 
-    const host = req.headers['x-forwarded-host'] || req.headers.host;
-    const proto = req.headers['x-forwarded-proto'] || 'https';
+    const base = publicBase(req);
 
     res.json({
       id: doc.id,
       name: doc.name,
-      loadstring: `loadstring(game:HttpGet("${proto}://${host}/api/v1/luascripts/public/${doc.id}/download"))()`
+      loadstring: `loadstring(game:HttpGet("${base}/api/v1/luascripts/public/${doc.id}/download"))()`
     });
   } catch (e) {
     console.error(e);
@@ -1043,12 +1108,22 @@ app.post('/api/scripts', auth, needMongo, async (req, res) => {
 
 app.put('/api/scripts/:id', auth, needMongo, async (req, res) => {
   try {
-    const { name, description, source, keyMode, providerId } = req.body || {};
+    const body = req.body || {};
+    const { name, description, source, keyMode, providerId } = body;
+    const hasSource = Object.prototype.hasOwnProperty.call(body, 'source');
+    if (hasSource && (typeof source !== 'string' || !source.trim())) {
+      return res.status(400).json({ error: 'source debe ser texto no vacío' });
+    }
     const s = await Script.findOne({ id: req.params.id, ownerId: req.user.sub });
     if (!s) return res.status(404).json({ error: 'No encontrado' });
+    // Migrate a legacy plaintext row whenever its owner edits it.  The current
+    // payload remains unchanged; only storage is upgraded.
+    if (SOURCE_ENCRYPTION_KEY && !String(s.source || '').startsWith('enc:v1:')) {
+      s.source = protectSourceAtRest(s.source);
+    }
 
     // version snapshot before change
-    if (source || name || description !== undefined) {
+    if (hasSource || name || description !== undefined) {
       await ScriptVersion.create({
         scriptId: s.id,
         ownerId: req.user.sub,
@@ -1075,21 +1150,22 @@ app.put('/api/scripts/:id', auth, needMongo, async (req, res) => {
         s.providerId = ''; s.providerName = '';
       }
     }
-    if (req.body?.obfMode && ['none','qrex','qyrex','local','hybrid'].includes(req.body.obfMode)) {
-      s.obfMode = req.body.obfMode === 'qyrex' ? 'qrex' : req.body.obfMode;
+    if (body.obfMode && ['none','qrex','qyrex','local','hybrid'].includes(body.obfMode)) {
+      s.obfMode = body.obfMode === 'qyrex' ? 'qrex' : body.obfMode;
       s.doObfuscate = s.obfMode !== 'none';
-    } else if (req.body?.doObfuscate !== undefined) {
-      s.doObfuscate = req.body.doObfuscate !== false && req.body.doObfuscate !== 'false';
+    } else if (body.doObfuscate !== undefined) {
+      s.doObfuscate = body.doObfuscate !== false && body.doObfuscate !== 'false';
       s.obfMode = s.doObfuscate ? (s.obfMode === 'local' ? 'local' : 'hybrid') : 'none';
     }
-    if (source) {
-      s.source = source;
-      const resolved = await resolveObfuscated(source, (req.body && req.body.obfMode) || s.obfMode || 'qrex');
+    if (hasSource) {
+      const resolved = await resolveObfuscated(source, body.obfMode || s.obfMode || 'qrex');
+      s.source = protectSourceAtRest(source);
       s.obfuscated = resolved.code;
       s.doObfuscate = resolved.doObfuscate;
       s.obfMode = resolved.obfMode;
-    } else if ((req.body?.obfMode || req.body?.doObfuscate !== undefined) && s.source) {
-      const resolved = await resolveObfuscated(s.source, (req.body && req.body.obfMode) || s.obfMode || 'qrex');
+    } else if ((body.obfMode || body.doObfuscate !== undefined) && s.source) {
+      const sourceForBuild = revealSourceAtRest(s.source);
+      const resolved = await resolveObfuscated(sourceForBuild, body.obfMode || s.obfMode || 'qrex');
       s.obfuscated = resolved.code;
       s.doObfuscate = resolved.doObfuscate;
       s.obfMode = resolved.obfMode;
@@ -1193,9 +1269,19 @@ function buildDoubleLinkStub(cacheUrl) {
   ].join('\n');
 }
 function publicBase(req) {
-  const host = req.headers['x-forwarded-host'] || req.headers.host;
-  const proto = req.headers['x-forwarded-proto'] || 'https';
-  return proto + '://' + host;
+  if (PUBLIC_BASE_URL) return PUBLIC_BASE_URL;
+
+  // Development-only fallback.  Production uses a configured canonical URL so
+  // a forwarded Host header cannot be reflected into generated loadstrings.
+  const forwardedHost = String(req.headers['x-forwarded-host'] || req.headers.host || '')
+    .split(',')[0].trim();
+  if (!/^[a-z0-9.-]+(?::\d{1,5})?$/i.test(forwardedHost)) {
+    throw new Error('Invalid request host. Configure PUBLIC_BASE_URL.');
+  }
+  const forwardedProto = String(req.headers['x-forwarded-proto'] || req.protocol || 'http')
+    .split(',')[0].trim().toLowerCase();
+  const protocol = forwardedProto === 'https' ? 'https' : 'http';
+  return protocol + '://' + forwardedHost;
 }
 
 function isBrowserReq(req) {
@@ -1612,9 +1698,8 @@ app.post('/api/hub', auth, needMongo, async (req, res) => {
     const exists = await HubScript.findOne({ scriptId: s.id });
     if (exists) return res.status(400).json({ error: 'Este script ya está en el hub' });
 
-    const host = req.headers['x-forwarded-host'] || req.headers.host;
-    const proto = req.headers['x-forwarded-proto'] || 'https';
-    const loadstring = `loadstring(game:HttpGet("${proto}://${host}/api/v1/luascripts/public/${s.id}/download"))()`;
+    const base = publicBase(req);
+    const loadstring = `loadstring(game:HttpGet("${base}/api/v1/luascripts/public/${s.id}/download"))()`;
 
     const user = await User.findById(req.user.sub).lean();
     const doc = await HubScript.create({
@@ -2360,7 +2445,7 @@ app.post('/api/scripts/:id/versions/:vid/restore', auth, needMongo, async (req, 
   const v = await ScriptVersion.findOne({ _id: req.params.vid, scriptId: s.id, ownerId: req.user.sub });
   if (!v) return res.status(404).json({ error: 'Versión no encontrada' });
   await ScriptVersion.create({ scriptId: s.id, ownerId: req.user.sub, name: s.name, source: s.source, obfuscated: s.obfuscated, note: 'Before restore' });
-  s.source = v.source;
+  s.source = protectSourceAtRest(revealSourceAtRest(v.source));
   s.obfuscated = v.obfuscated;
   if (v.name) s.name = v.name;
   await s.save();
