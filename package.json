@@ -1,0 +1,16 @@
+{
+  "name": "super-obf-pro",
+  "version": "1.0.0",
+  "description": "SuperObf Pro - multi-layer Lua/Luau obfuscator",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "build": "echo 'No build step required'"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "express": "^4.21.2"
+  }
+}
