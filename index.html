@@ -4,14 +4,25 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <meta name="robots" content="noindex,nofollow" />
-  <title>Qyrex Obfuscator</title>
+  <title>SuperObf Pro</title>
   <style>
+    :root {
+      --bg: #06070b;
+      --panel: rgba(13,14,20,.92);
+      --border: #282b38;
+      --text: #f5f5f7;
+      --muted: #717489;
+      --accent: #7c5cff;
+      --accent2: #31d7ff;
+      --ok: #83d9b3;
+      --err: #f87171;
+    }
     * { box-sizing: border-box; }
     body {
       margin: 0;
       min-height: 100vh;
-      background: #06070b;
-      color: #f5f5f7;
+      background: var(--bg);
+      color: var(--text);
       font: 14px Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     }
     body:before {
@@ -20,65 +31,38 @@
       inset: -20%;
       pointer-events: none;
       background:
-        radial-gradient(circle at 15% 10%, rgba(124,92,255,.24), transparent 30%),
-        radial-gradient(circle at 90% 10%, rgba(0,212,255,.12), transparent 25%);
-      filter: blur(12px);
+        radial-gradient(circle at 12% 8%, rgba(124,92,255,.28), transparent 28%),
+        radial-gradient(circle at 88% 12%, rgba(49,215,255,.14), transparent 26%),
+        radial-gradient(circle at 50% 90%, rgba(124,92,255,.08), transparent 40%);
+      filter: blur(14px);
     }
-    .shell {
-      position: relative;
-      max-width: 1100px;
-      margin: auto;
-      padding: 28px 20px 60px;
-    }
-    .nav {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      margin-bottom: 26px;
-    }
-    .brand {
-      display: flex;
-      gap: 11px;
-      align-items: center;
-      font-weight: 800;
-      font-size: 18px;
-    }
+    .shell { position: relative; max-width: 1120px; margin: auto; padding: 28px 18px 70px; }
+    .nav { display: flex; justify-content: space-between; align-items: center; margin-bottom: 22px; gap: 12px; flex-wrap: wrap; }
+    .brand { display: flex; gap: 12px; align-items: center; font-weight: 800; font-size: 18px; }
     .mark {
-      width: 35px;
-      height: 35px;
-      border-radius: 11px;
-      display: grid;
-      place-items: center;
-      background: linear-gradient(135deg, #7c5cff, #31d7ff);
-      box-shadow: 0 0 35px rgba(124,92,255,.3);
+      width: 38px; height: 38px; border-radius: 12px; display: grid; place-items: center;
+      background: linear-gradient(135deg, var(--accent), var(--accent2));
+      box-shadow: 0 0 40px rgba(124,92,255,.35);
+      font-size: 15px;
     }
-    .brand small {
-      display: block;
-      color: #77798a;
-      font-size: 10px;
-      letter-spacing: .12em;
-      text-transform: uppercase;
+    .brand small { display: block; color: #77798a; font-size: 10px; letter-spacing: .14em; text-transform: uppercase; }
+    .badge {
+      border: 1px solid #2b2f3d; background: #0d0f15; border-radius: 999px;
+      padding: 7px 12px; color: #adb2c5; font-size: 11px; font-weight: 700;
     }
     .panel {
-      border: 1px solid #282b38;
-      background: rgba(13,14,20,.9);
-      box-shadow: 0 28px 100px rgba(0,0,0,.35);
+      border: 1px solid var(--border);
+      background: var(--panel);
+      box-shadow: 0 28px 100px rgba(0,0,0,.4);
       border-radius: 22px;
-      padding: 22px;
-      margin-bottom: 16px;
+      padding: 20px;
+      margin-bottom: 14px;
     }
-    .panel h2 {
-      font-size: 15px;
-      margin: 0 0 8px;
-    }
-    .muted {
-      font-size: 12px;
-      color: #717489;
-      margin-bottom: 12px;
-    }
+    .panel h2 { margin: 0 0 6px; font-size: 15px; }
+    .muted { color: var(--muted); font-size: 12px; margin-bottom: 12px; line-height: 1.5; }
     textarea {
       width: 100%;
-      min-height: 220px;
+      min-height: 210px;
       border-radius: 14px;
       border: 1px solid #282c39;
       background: #080a0f;
@@ -87,52 +71,41 @@
       padding: 14px;
       resize: vertical;
     }
-    .row {
-      display: flex;
-      flex-wrap: wrap;
+    .opts {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
       gap: 10px;
-      margin-top: 14px;
-      align-items: center;
-    }
-    .btn {
-      border: 1px solid #292c39;
-      background: #10121a;
-      color: #f4f5f7;
-      padding: 10px 16px;
-      border-radius: 12px;
-      font-weight: 700;
-      cursor: pointer;
-    }
-    .btn.primary {
-      background: #f4f5f7;
-      color: #08090d;
-      border-color: #fff;
-    }
-    .btn:disabled {
-      opacity: .5;
-      cursor: not-allowed;
+      margin: 12px 0 4px;
     }
     label.check {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      color: #a8abba;
-      font-size: 13px;
-      cursor: pointer;
+      display: flex; align-items: center; gap: 8px;
+      color: #a8abba; font-size: 13px; cursor: pointer;
+      border: 1px solid #242836; background: #0b0d13;
+      border-radius: 12px; padding: 10px 12px;
     }
-    .status {
-      margin-top: 10px;
-      font-size: 12px;
-      color: #83d9b3;
-      min-height: 18px;
+    label.check input { accent-color: var(--accent); }
+    .row { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 14px; align-items: center; }
+    .btn {
+      border: 1px solid #292c39; background: #10121a; color: var(--text);
+      padding: 11px 16px; border-radius: 12px; font-weight: 700; cursor: pointer;
     }
-    .status.err { color: #f87171; }
-    .foot {
-      text-align: center;
-      color: #55596c;
-      font-size: 11px;
-      margin-top: 18px;
+    .btn.primary {
+      background: linear-gradient(135deg, #f4f5f7, #d9dbe3);
+      color: #08090d; border-color: #fff;
     }
+    .btn:disabled { opacity: .45; cursor: not-allowed; }
+    .status { margin-top: 10px; font-size: 12px; color: var(--ok); min-height: 18px; }
+    .status.err { color: var(--err); }
+    .layers {
+      display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px;
+    }
+    .chip {
+      font-size: 11px; font-weight: 700; letter-spacing: .04em;
+      border-radius: 999px; padding: 6px 10px;
+      border: 1px solid #2b2f3d; background: #0d0f15; color: #adb2c5;
+    }
+    .chip.on { border-color: rgba(124,92,255,.5); color: #cbb8ff; background: rgba(124,92,255,.12); }
+    .foot { text-align: center; color: #55596c; font-size: 11px; margin-top: 16px; }
     @media (max-width: 640px) {
       .row { flex-direction: column; align-items: stretch; }
       .btn { width: 100%; text-align: center; }
@@ -143,20 +116,27 @@
   <main class="shell">
     <nav class="nav">
       <div class="brand">
-        <div class="mark">Q</div>
-        <div>Qyrex<small>Obfuscator</small></div>
+        <div class="mark">SO</div>
+        <div>SuperObf Pro<small>multi-layer · browser only</small></div>
       </div>
+      <div class="badge">v1.0 · GitHub Pages ready</div>
     </nav>
 
     <section class="panel">
       <h2>Código fuente</h2>
-      <div class="muted">Pega tu script Lua / Luau. Se ofusca en el navegador (no se sube a ningún servidor).</div>
-      <textarea id="input" placeholder="print('hola')"></textarea>
+      <div class="muted">Pega Lua / Luau. Todo se procesa en tu navegador. No se envía a ningún servidor.</div>
+      <textarea id="input" placeholder="print('hola mundo')"></textarea>
+
+      <div class="opts">
+        <label class="check"><input type="checkbox" id="antiTamper" checked /> Anti-tamper</label>
+        <label class="check"><input type="checkbox" id="envGate" checked /> Env Gate</label>
+        <label class="check"><input type="checkbox" id="outerRc4" /> Outer RC4 stream</label>
+        <label class="check"><input type="checkbox" id="watermark" checked /> Watermark</label>
+      </div>
+
+      <div class="layers" id="layerPreview"></div>
+
       <div class="row">
-        <label class="check">
-          <input type="checkbox" id="envGate" checked />
-          Incluir Env Gate (anti-steal)
-        </label>
         <button class="btn primary" id="btnObf">Ofuscar</button>
         <button class="btn" id="btnClear">Limpiar</button>
       </div>
@@ -165,7 +145,7 @@
 
     <section class="panel">
       <h2>Resultado</h2>
-      <div class="muted">Copia y usa con loadstring / executor.</div>
+      <div class="muted">Compatible con la mayoría de executors (no reescribe tokens del código).</div>
       <textarea id="output" readonly placeholder="El código ofuscado aparece aquí..."></textarea>
       <div class="row">
         <button class="btn primary" id="btnCopy">Copiar</button>
@@ -173,7 +153,7 @@
       </div>
     </section>
 
-    <div class="foot">Qyrex polymorphic compatibility pack · estático para GitHub Pages</div>
+    <div class="foot">SuperObf Pro · capas: anti-tamper · env-gate · polymorphic pack · RC4 outer (opcional)</div>
   </main>
 
   <script src="obfuscator.js"></script>
@@ -182,7 +162,35 @@
     const input = $('input');
     const output = $('output');
     const status = $('status');
-    const envGate = $('envGate');
+    const layerPreview = $('layerPreview');
+
+    function opts() {
+      return {
+        antiTamper: $('antiTamper').checked,
+        envGate: $('envGate').checked,
+        outerRc4: $('outerRc4').checked,
+        watermark: $('watermark').checked
+      };
+    }
+
+    function refreshLayers() {
+      const o = opts();
+      const items = [
+        ['Anti-tamper', o.antiTamper],
+        ['Env Gate', o.envGate],
+        ['Polymorphic pack', true],
+        ['RC4 outer', o.outerRc4],
+        ['Watermark', o.watermark]
+      ];
+      layerPreview.innerHTML = items.map(([n, on]) =>
+        '<span class="chip' + (on ? ' on' : '') + '">' + n + '</span>'
+      ).join('');
+    }
+
+    ['antiTamper','envGate','outerRc4','watermark'].forEach(id => {
+      $(id).addEventListener('change', refreshLayers);
+    });
+    refreshLayers();
 
     function setStatus(msg, isErr) {
       status.textContent = msg || '';
@@ -192,15 +200,12 @@
     $('btnObf').onclick = function () {
       try {
         const src = input.value;
-        if (!src.trim()) {
-          setStatus('Código vacío', true);
-          return;
-        }
-        const result = window.QyrexObfuscator.obfuscate(src, {
-          envGate: envGate.checked
-        });
+        if (!src.trim()) { setStatus('Código vacío', true); return; }
+        const t0 = performance.now();
+        const result = window.SuperObfPro.obfuscate(src, opts());
+        const ms = Math.round(performance.now() - t0);
         output.value = result;
-        setStatus('OK · ' + result.length + ' caracteres');
+        setStatus('OK · ' + result.length.toLocaleString() + ' chars · ' + ms + ' ms');
       } catch (e) {
         setStatus(e.message || String(e), true);
       }
@@ -231,7 +236,7 @@
       const blob = new Blob([t], { type: 'text/plain;charset=utf-8' });
       const a = document.createElement('a');
       a.href = URL.createObjectURL(blob);
-      a.download = 'obfuscated.lua';
+      a.download = 'superobf_protected.lua';
       a.click();
       URL.revokeObjectURL(a.href);
       setStatus('Descarga iniciada');
