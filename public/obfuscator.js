@@ -1,23 +1,23 @@
 /**
- * SUPER OBFUSCATOR PRO
- * Multi-layer Lua/Luau packer for browser (GitHub Pages compatible)
+ * QyrexObf / SuperObf Pro
+ * Robust multi-layer Lua/Luau obfuscator.
  *
- * Layers:
- *  1. Anti-tamper + Env Gate (BESTANTITAMPER + Qrex + Sandbox patterns)
- *  2. Polymorphic XOR + position mask + shuffled Base64 + chunk permutation + Adler32
- *  3. Optional outer RC4-style stream wrap
- *  4. Integrity + decoy fail paths
- *
- * Does NOT rewrite Luau tokens → high executor compatibility.
+ * Design goals:
+ *  - Never rewrite the user's Lua/Luau tokens.
+ *  - Keep generated code compatible with common Lua 5.1+ / Luau environments.
+ *  - Avoid fragile executor-specific checks that can cause false positives.
+ *  - Add polymorphic sequence/dispatcher noise inspired by the supplied sample.
+ *  - Decode/decrypt entirely inside the generated Lua chunk.
  */
 
 (function (global) {
   'use strict';
 
-  // ---------- RNG (Web Crypto preferred) ----------
+  const MAX_SOURCE_BYTES = 4 * 1024 * 1024;
+
   function randomBytes(n) {
     const a = new Uint8Array(n);
-    if (global.crypto && global.crypto.getRandomValues) {
+    if (global.crypto && typeof global.crypto.getRandomValues === 'function') {
       global.crypto.getRandomValues(a);
     } else {
       for (let i = 0; i < n; i++) a[i] = (Math.random() * 256) | 0;
@@ -26,302 +26,359 @@
   }
 
   function randomInt(min, max) {
-    // [min, max)
+    if (max <= min) return min;
     const range = max - min;
-    if (global.crypto && global.crypto.getRandomValues) {
-      const buf = new Uint32Array(1);
-      global.crypto.getRandomValues(buf);
-      return min + (buf[0] % range);
+    if (global.crypto && typeof global.crypto.getRandomValues === 'function') {
+      const b = new Uint32Array(1);
+      global.crypto.getRandomValues(b);
+      return min + (b[0] % range);
     }
     return min + ((Math.random() * range) | 0);
   }
 
-  function shuffleChars(s) {
-    const a = String(s).split('');
-    for (let i = a.length - 1; i > 0; i--) {
-      const j = randomInt(0, i + 1);
-      const t = a[i]; a[i] = a[j]; a[j] = t;
-    }
-    return a.join('');
-  }
-
-  function luaId() {
-    const b = randomBytes(6);
+  function luaId(prefix) {
+    const b = randomBytes(7);
     let h = '';
     for (let i = 0; i < b.length; i++) h += b[i].toString(16).padStart(2, '0');
-    return '_' + h;
+    return '_' + (prefix || 'q') + h;
   }
 
-  function adler32(buf) {
+  function shuffleArray(a) {
+    for (let i = a.length - 1; i > 0; i--) {
+      const j = randomInt(0, i + 1);
+      const t = a[i];
+      a[i] = a[j];
+      a[j] = t;
+    }
+    return a;
+  }
+
+  function adler32(bytes) {
     let a = 1, b = 0;
-    for (let i = 0; i < buf.length; i++) {
-      a = (a + buf[i]) % 65521;
+    for (let i = 0; i < bytes.length; i++) {
+      a = (a + bytes[i]) % 65521;
       b = (b + a) % 65521;
     }
     return b * 65536 + a;
   }
 
-  // ---------- Layer 1: Anti-tamper + Env Gate ----------
-  const ANTI_TAMPER_LUA = `--[[ SuperObf Pro · Anti-Tamper ]]
-local __so_ok = true
-local function __so_fail(c)
-  __so_ok = false
-  pcall(function() error("[SO] " .. tostring(c), 0) end)
-end
+  function bytesToBase64(bytes) {
+    const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+    let out = '';
+    const step = 0x6000;
+    for (let i = 0; i < bytes.length; i += step) {
+      const end = Math.min(bytes.length, i + step);
+      let bin = '';
+      for (let j = i; j < end; j++) bin += String.fromCharCode(bytes[j]);
+      out += btoa(bin);
+    }
+    return out;
+  }
 
+  function replaceAlphabet(base64, alphabet) {
+    const std = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+    const map = Object.create(null);
+    for (let i = 0; i < std.length; i++) map[std[i]] = alphabet[i];
+    return base64.replace(/[A-Za-z0-9+/]/g, c => map[c]);
+  }
+
+  // Soft checks only. They never assume executor-specific APIs exist.
+  const ANTI_TAMPER_LUA = `
 do
-  local _ENV = (getfenv and getfenv(0)) or _G
-  local rawget, pcall, type, tostring = rawget, pcall, type, tostring
-  local clock = (os and os.clock) or tick or function() return 0 end
+  local __q_ok = true
+  local __q_fail = false
+  local __q_type = type
+  local __q_pcall = pcall
 
-  -- hooks on critical builtins
-  for _, name in ipairs({"print","loadstring","load","setmetatable","pairs","ipairs","rawget","pcall"}) do
-    local f = rawget(_ENV, name) or rawget(_G, name)
-    if f then
-      if type(f) ~= "function" then __so_fail("H-type") end
-      local s = tostring(f)
-      if not (string.find(s, "builtin") or string.find(s, "0x") or string.find(s, "function")) then
-        __so_fail("H-repr")
-      end
-    end
-  end
-
-  -- getgenv / debug integrity (executor context)
-  if getgenv then
-    local ok, genv = pcall(getgenv)
-    if not ok or type(genv) ~= "table" then __so_fail("genv") end
-    local mt = getmetatable(genv)
-    if mt and (mt.__index or mt.__newindex or mt.__metatable) then __so_fail("genv-mt") end
-    if debug and debug.getinfo then
-      local info = debug.getinfo(getgenv)
-      if not info or info.what ~= "C" then __so_fail("genv-info") end
-    end
-  end
-
-  -- DataModel
-  if game and game.ClassName ~= "DataModel" then __so_fail("dm") end
-
-  -- light latency check
-  local t0 = clock()
-  for i = 1, 80 do end
-  if (clock() - t0) > 0.35 then __so_fail("lat") end
-end
-
-if not __so_ok then
-  while true do end
-end
-`;
-
-  const ENV_GATE_LUA = `--[[ SuperObf Pro · Env Gate ]]
-local function __soEnvGate()
-  local _ok = true
-  local function fail() _ok = false end
-
-  do
-    local a = true
-    local b = getgenv
-    local c = debug
-    local d = c and c.getinfo
-    local e = c and (c.getupvalue or c.getupvalues)
-    local f = getmetatable
-    local g = iscclosure
-    if not b or not d then
-      a = false
-    else
-      local h = b()
-      if f(h) and (f(h).__index or f(h).__newindex or f(h).__metatable) then a = false end
-      local k = d(b)
-      if not k or k.what ~= "C" or k.source ~= "=[C]" then a = false end
-      if g and not g(b) then a = false end
-      if e then
-        local l, m = pcall(e, b, 1)
-        if l and m ~= nil then a = false end
-      end
-      local x = "_t"
-      h[x] = 1
-      if rawget(h, x) ~= 1 then a = false end
-      h[x] = nil
-    end
-    if not a then fail() end
-  end
-
-  do
-    local success = pcall(function()
-      local c = Instance.new("TerrainRegion")
-      assert(typeof(c) == "Instance")
-      assert(c.ClassName == "TerrainRegion")
-      assert(c:IsA("TerrainRegion"))
-      local part = Instance.new("Part")
-      local _ = part.Position
-      part:Destroy()
+  local function __q_check_fn(name)
+    local ok, value = __q_pcall(function()
+      return _G[name]
     end)
-    if not success then fail() end
-  end
-
-  do
-    if game.ClassName ~= "DataModel" then fail() end
-  end
-
-  do
-    local w = workspace
-    local a = Instance.new("Part")
-    local b = Instance.new("Part")
-    a.Anchored = true; b.Anchored = true
-    a.CFrame = CFrame.new(0,0,0); b.CFrame = CFrame.new(0,0,0)
-    a.Parent = w; b.Parent = w
-    local q = OverlapParams.new()
-    q.IncludeInstances = {a, b}
-    local x = w:GetPartBoundsInBox(CFrame.new(), Vector3.new(4,4,4), q)
-    q.ExcludeInstances = {b}
-    local y = w:GetPartBoundsInBox(CFrame.new(), Vector3.new(4,4,4), q)
-    q.IncludeInstances = {}
-    local z = w:GetPartBoundsInBox(CFrame.new(), Vector3.new(4,4,4), q)
-    local function has(t, inst)
-      for _, v in t do if v == inst then return true end end
-      return false
+    if ok and value ~= nil and __q_type(value) ~= "function" then
+      __q_ok = false
     end
-    local ok = has(x,a) and has(x,b) and has(y,a) and not has(y,b) and #z == 0
-    a:Destroy(); b:Destroy()
-    if not ok then fail() end
   end
 
-  if not _ok then error("dtc bro") end
+  __q_check_fn("pcall")
+  __q_check_fn("type")
+  __q_check_fn("tostring")
+  __q_check_fn("loadstring")
+
+  -- Optional integrity probes: only run when the API is present.
+  __q_pcall(function()
+    if debug and debug.getinfo and __q_type(debug.getinfo) == "function" then
+      local i = debug.getinfo(1)
+      if i and i.what == "C" then
+        __q_fail = false
+      end
+    end
+  end)
+
+  __q_pcall(function()
+    if game and game.ClassName and game.ClassName ~= "DataModel" then
+      __q_ok = false
+    end
+  end)
+
+  if not __q_ok then
+    -- Soft-fail instead of an infinite loop or forced executor crash.
+    __q_fail = true
+  end
 end
-__soEnvGate()
 `;
 
-  // ---------- Layer 2: Polymorphic packer (core) ----------
-  function polymorphicPack(code) {
-    const raw = String(code || '');
-    if (!raw) return '-- empty';
+  // Compatibility-first environment gate. It only verifies APIs if they exist;
+  // it does not require getgenv/debug/OverlapParams/etc.
+  const ENV_GATE_LUA = `
+do
+  local __q_env_ok = true
+  local function __q_try(fn)
+    local ok, value = pcall(fn)
+    if not ok then __q_env_ok = false end
+    return ok, value
+  end
+
+  __q_try(function()
+    if type(string.byte) ~= "function" then error("string.byte") end
+    if type(string.char) ~= "function" then error("string.char") end
+    if type(table.concat) ~= "function" then error("table.concat") end
+    if type(math.floor) ~= "function" then error("math.floor") end
+  end)
+
+  __q_try(function()
+    if game and game.GetService and type(game.GetService) ~= "function" then
+      error("game.GetService")
+    end
+  end)
+
+  -- A failed optional probe simply disables this local flag.
+  -- The payload is intentionally not blocked by executor-specific features.
+  if not __q_env_ok then
+    __q_env_ok = false
+  end
+end
+`;
+
+  function sequenceNoiseLua() {
+    const nState = luaId('s');
+    const nBox = luaId('b');
+    const nStep = luaId('k');
+    const nMix = luaId('m');
+    const nSeed = randomInt(1000, 900000);
+    const slots = shuffleArray([11, 17, 23, 31, 43, 59, 71, 89]);
+
+    // This mirrors the supplied sample's general numbered-dispatch style,
+    // but all branches resolve to a harmless local value.
+    const cases = slots.map((v, idx) => {
+      const next = slots[(idx + 1) % slots.length];
+      return `
+    if ${nState} == ${v} then
+      ${nBox}[${idx + 1}] = (${v} + ${nSeed}) % 251
+      ${nState} = ${next}`;
+    }).join(' elseif ');
+
+    return [
+      '-- Qyrex sequence shield',
+      'do',
+      `  local ${nState} = ${slots[0]}`,
+      `  local ${nBox} = {}`,
+      `  local ${nStep} = 0`,
+      `  local function ${nMix}(x)`,
+      `    local a = (x * 17 + ${nSeed}) % 256`,
+      `    local b = (a * 29 + 7) % 256`,
+      `    return (b + x) % 256`,
+      '  end',
+      `  for _ = 1, ${randomInt(2, 4)} do`,
+      `    ${nStep} = ${nStep} + 1`,
+      `    ${nState} = ${nMix}(${nState}) % 256`,
+      `    if ${nStep} == 1 then`,
+      `      ${nState} = ${slots[0]}`,
+      `    end`,
+      '  end',
+      `  if ${nState} == ${slots[0]} then`,
+      `    ${nBox}[1] = ${nSeed % 251}`,
+      '  else',
+      `    ${nBox}[1] = ${nSeed % 239}`,
+      '  end',
+      // One compact state-style chain, never touching the payload.
+      `  ${nState} = ${slots[1]}`,
+      cases,
+      '  local _ = ' + nBox + '[1]',
+      'end'
+    ].join('\n');
+  }
+
+  function polymorphicPack(source) {
+    const raw = String(source || '');
+    if (!raw.trim()) throw new Error('Código vacío');
+
     const encoder = new TextEncoder();
     const src = encoder.encode(raw);
-    if (src.length > 2_000_000) throw new Error('Script demasiado grande (máx. 2 MB)');
+    if (src.length > MAX_SOURCE_BYTES) {
+      throw new Error('Script demasiado grande (máx. 4 MB)');
+    }
 
-    const key = randomBytes(randomInt(19, 41));
-    const mul = randomInt(5, 126) * 2 + 1;
+    const key = randomBytes(randomInt(24, 49));
+    const mul = (randomInt(5, 127) * 2) + 1; // odd -> better diffusion
     const add = randomInt(0, 256);
     const step = randomInt(1, 256);
-    const encrypted = new Uint8Array(src.length);
 
+    const encrypted = new Uint8Array(src.length);
     for (let i = 0; i < src.length; i++) {
       const pos = i + 1;
-      const mask = (pos * mul + add + Math.floor(pos / 7) * step) & 0xff;
+      const mask = (pos * mul + add + Math.floor(pos / 7) * step) & 255;
       encrypted[i] = src[i] ^ key[i % key.length] ^ mask;
     }
 
-    let binary = '';
-    for (let i = 0; i < encrypted.length; i++) binary += String.fromCharCode(encrypted[i]);
-    const stdB64 = btoa(binary);
-
-    const stdAlphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
-    const alphabet = shuffleChars(stdAlphabet);
-    const translate = {};
-    for (let i = 0; i < stdAlphabet.length; i++) translate[stdAlphabet[i]] = alphabet[i];
-    const encoded = stdB64.replace(/[A-Za-z0-9+/]/g, c => translate[c]);
+    const stdB64 = bytesToBase64(encrypted);
+    const alphabet = shuffleArray(
+      'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'.split('')
+    ).join('');
+    const encoded = replaceAlphabet(stdB64, alphabet);
 
     const chunks = [];
-    let off = 0;
-    while (off < encoded.length) {
-      const size = randomInt(96, 225);
-      chunks.push(encoded.slice(off, off + size));
-      off += size;
+    for (let i = 0; i < encoded.length;) {
+      const size = randomInt(96, 241);
+      chunks.push(encoded.slice(i, i + size));
+      i += size;
     }
 
-    const perm = chunks.map((_, i) => i);
-    for (let i = perm.length - 1; i > 0; i--) {
-      const j = randomInt(0, i + 1);
-      const t = perm[i]; perm[i] = perm[j]; perm[j] = t;
-    }
-    const storedChunks = perm.map(i => chunks[i]);
+    const permutation = shuffleArray(chunks.map((_, i) => i));
+    const storedChunks = permutation.map(i => chunks[i]);
     const order = new Array(chunks.length);
-    perm.forEach((orig, stored) => { order[orig] = stored + 1; });
+    for (let stored = 0; stored < permutation.length; stored++) {
+      order[permutation[stored]] = stored + 1;
+    }
 
-    const nChunks = luaId(), nOrder = luaId(), nAlphabet = luaId(), nKey = luaId();
-    const nJoin = luaId(), nB64 = luaId(), nXor = luaId(), nDecrypt = luaId();
-    const nAdler = luaId(), nEnc = luaId(), nData = luaId(), nFn = luaId(), nErr = luaId();
-
-    const keyLiteral = '{' + Array.from(key).join(',') + '}';
-    const chunksLiteral = '{' + storedChunks.map(c => JSON.stringify(c)).join(',') + '}';
-    const orderLiteral = '{' + order.join(',') + '}';
+    const nChunks = luaId('c');
+    const nOrder = luaId('o');
+    const nAlphabet = luaId('a');
+    const nKey = luaId('y');
+    const nJoin = luaId('j');
+    const nB64 = luaId('d');
+    const nXor = luaId('x');
+    const nDec = luaId('r');
+    const nHash = luaId('h');
+    const nEnc = luaId('e');
+    const nData = luaId('p');
+    const nLoad = luaId('l');
+    const nErr = luaId('u');
     const checksum = adler32(src);
 
-    const lines = [
-      '-- SuperObf Pro · polymorphic compatibility pack',
+    const keyLiteral = '{' + Array.from(key).join(',') + '}';
+    const chunksLiteral = '{' + storedChunks.map(s => JSON.stringify(s)).join(',') + '}';
+    const orderLiteral = '{' + order.join(',') + '}';
+
+    return [
+      '-- QyrexObf · protected polymorphic layer',
       'local ' + nChunks + '=' + chunksLiteral,
       'local ' + nOrder + '=' + orderLiteral,
       'local ' + nAlphabet + '=' + JSON.stringify(alphabet),
       'local ' + nKey + '=' + keyLiteral,
+
       'local function ' + nJoin + '()',
-      '  local o={}',
-      '  for i=1,#' + nOrder + ' do o[i]=' + nChunks + '[' + nOrder + '[i]] end',
-      '  return table.concat(o)',
-      'end',
-      'local function ' + nB64 + '(s)',
-      '  local m={}',
-      '  for i=1,#' + nAlphabet + ' do m[string.sub(' + nAlphabet + ',i,i)]=i-1 end',
-      '  local o,n={},0',
-      '  for i=1,#s,4 do',
-      '    local a=string.sub(s,i,i)',
-      '    local b=string.sub(s,i+1,i+1)',
-      '    local c=string.sub(s,i+2,i+2)',
-      '    local d=string.sub(s,i+3,i+3)',
-      '    local v1=m[a] or 0; local v2=m[b] or 0; local v3=m[c] or 0; local v4=m[d] or 0',
-      '    local x=v1*262144+v2*4096+v3*64+v4',
-      '    n=n+1; o[n]=string.char(math.floor(x/65536)%256)',
-      '    if c~="=" and c~="" then n=n+1; o[n]=string.char(math.floor(x/256)%256) end',
-      '    if d~="=" and d~="" then n=n+1; o[n]=string.char(x%256) end',
+      '  local t={}',
+      '  for i=1,#' + nOrder + ' do',
+      '    t[i]=' + nChunks + '[' + nOrder + '[i]]',
       '  end',
-      '  return table.concat(o)',
+      '  return table.concat(t)',
       'end',
+
+      'local function ' + nB64 + '(s)',
+      '  local map={}',
+      '  for i=1,#' + nAlphabet + ' do',
+      '    map[string.sub(' + nAlphabet + ',i,i)]=i-1',
+      '  end',
+      '  local out,n={},0',
+      '  for i=1,#s,4 do',
+      '    local c1=string.sub(s,i,i)',
+      '    local c2=string.sub(s,i+1,i+1)',
+      '    local c3=string.sub(s,i+2,i+2)',
+      '    local c4=string.sub(s,i+3,i+3)',
+      '    if c1=="" then break end',
+      '    local v1=map[c1] or 0',
+      '    local v2=map[c2] or 0',
+      '    local v3=map[c3] or 0',
+      '    local v4=map[c4] or 0',
+      '    local x=v1*262144+v2*4096+v3*64+v4',
+      '    n=n+1',
+      '    out[n]=string.char(math.floor(x/65536)%256)',
+      '    if c3~="=" and c3~="" then',
+      '      n=n+1',
+      '      out[n]=string.char(math.floor(x/256)%256)',
+      '    end',
+      '    if c4~="=" and c4~="" then',
+      '      n=n+1',
+      '      out[n]=string.char(x%256)',
+      '    end',
+      '  end',
+      '  return table.concat(out)',
+      'end',
+
       'local ' + nXor + '=(bit32 and bit32.bxor) or function(a,b)',
       '  local r,p=0,1',
       '  while a>0 or b>0 do',
-      '    local aa=a%2; local bb=b%2',
+      '    local aa=a%2',
+      '    local bb=b%2',
       '    if aa~=bb then r=r+p end',
-      '    a=(a-aa)/2; b=(b-bb)/2; p=p*2',
+      '    a=(a-aa)/2',
+      '    b=(b-bb)/2',
+      '    p=p*2',
       '  end',
       '  return r',
       'end',
-      'local function ' + nDecrypt + '(s)',
-      '  local o={}',
+
+      'local function ' + nDec + '(s)',
+      '  local out={}',
       '  for i=1,#s do',
       '    local mask=(i*' + mul + '+' + add + '+math.floor(i/7)*' + step + ')%256',
       '    local k=' + nKey + '[((i-1)%#' + nKey + ')+1]',
-      '    o[i]=string.char(' + nXor + '(string.byte(s,i),' + nXor + '(k,mask)))',
+      '    out[i]=string.char(' + nXor + '(string.byte(s,i),' + nXor + '(k,mask)))',
       '  end',
-      '  return table.concat(o)',
+      '  return table.concat(out)',
       'end',
-      'local function ' + nAdler + '(s)',
+
+      'local function ' + nHash + '(s)',
       '  local a,b=1,0',
-      '  for i=1,#s do a=(a+string.byte(s,i))%65521; b=(b+a)%65521 end',
+      '  for i=1,#s do',
+      '    a=(a+string.byte(s,i))%65521',
+      '    b=(b+a)%65521',
+      '  end',
       '  return b*65536+a',
       'end',
-      'local ' + nEnc + '=' + nJoin + '()',
-      'local ' + nData + '=' + nDecrypt + '(' + nB64 + '(' + nEnc + '))',
-      'if ' + nAdler + '(' + nData + ')~=' + checksum + ' then error("protected payload integrity failure") end',
-      'local ' + nFn + ',' + nErr + '=(loadstring or load)(' + nData + ')',
-      'if type(' + nFn + ')~="function" then error(' + nErr + ' or "protected compile failure") end',
-      'return ' + nFn + '()'
-    ];
 
-    return lines.join('\n');
+      'local ' + nEnc + '=' + nJoin + '()',
+      'local ' + nData + '=' + nDec + '(' + nB64 + '(' + nEnc + '))',
+      'if ' + nHash + '(' + nData + ')~=' + checksum + ' then',
+      '  return',
+      'end',
+
+      'local ' + nLoad + '=(loadstring or load)',
+      'if type(' + nLoad + ')~="function" then return end',
+      'local ' + nErr,
+      'local __q_fn',
+      '__q_fn,' + nErr + '=' + nLoad + '(' + nData + ')',
+      'if type(__q_fn)~="function" then return end',
+      'return __q_fn()'
+    ].join('\n');
   }
 
-  // ---------- Layer 3: Outer RC4-style stream (optional) ----------
   function rc4OuterWrap(innerLua) {
     const key = randomBytes(16);
-    const encoder = new TextEncoder();
-    const plain = encoder.encode(innerLua);
+    const plain = new TextEncoder().encode(innerLua);
+
     const S = new Uint8Array(256);
     for (let i = 0; i < 256; i++) S[i] = i;
+
     let j = 0;
     for (let i = 0; i < 256; i++) {
       j = (j + S[i] + key[i % key.length]) & 255;
       const t = S[i]; S[i] = S[j]; S[j] = t;
     }
+
     const out = new Uint8Array(plain.length);
-    let i = 0; j = 0;
+    let i = 0;
+    j = 0;
     for (let n = 0; n < plain.length; n++) {
       i = (i + 1) & 255;
       j = (j + S[i]) & 255;
@@ -329,93 +386,116 @@ __soEnvGate()
       out[n] = plain[n] ^ S[(S[i] + S[j]) & 255];
     }
 
-    let bin = '';
-    for (let n = 0; n < out.length; n++) bin += String.fromCharCode(out[n]);
-    const b64 = btoa(bin);
-
-    const nKey = luaId(), nData = luaId(), nS = luaId(), nI = luaId(), nJ = luaId();
-    const nDec = luaId(), nFn = luaId(), nErr = luaId(), nXor = luaId();
-
-    const keyLit = '{' + Array.from(key).join(',') + '}';
+    const b64 = bytesToBase64(out);
+    const nKey = luaId('k');
+    const nData = luaId('d');
+    const nXor = luaId('x');
+    const nDec = luaId('u');
+    const nRaw = luaId('r');
+    const nLoad = luaId('l');
+    const nErr = luaId('e');
 
     return [
-      '-- SuperObf Pro · outer stream',
-      'local ' + nKey + '=' + keyLit,
+      '-- QyrexObf · optional outer stream',
+      'local ' + nKey + '={' + Array.from(key).join(',') + '}',
       'local ' + nData + '=' + JSON.stringify(b64),
-      'local ' + nXor + '=(bit32 and bit32.bxor) or function(a,b) local r,p=0,1 while a>0 or b>0 do local aa=a%2;local bb=b%2;if aa~=bb then r=r+p end;a=(a-aa)/2;b=(b-bb)/2;p=p*2 end return r end',
-      'local function ' + nDec + '()',
+
+      'local ' + nXor + '=(bit32 and bit32.bxor) or function(a,b)',
+      '  local r,p=0,1',
+      '  while a>0 or b>0 do',
+      '    local aa=a%2',
+      '    local bb=b%2',
+      '    if aa~=bb then r=r+p end',
+      '    a=(a-aa)/2',
+      '    b=(b-bb)/2',
+      '    p=p*2',
+      '  end',
+      '  return r',
+      'end',
+
+      'local function ' + nDec + '(s)',
+      '  local map={}',
+      '  local b="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"',
+      '  for i=1,#b do map[string.sub(b,i,i)]=i-1 end',
+      '  local o,n={},0',
+      '  for i=1,#s,4 do',
+      '    local a=string.sub(s,i,i)',
+      '    local c=string.sub(s,i+1,i+1)',
+      '    local d=string.sub(s,i+2,i+2)',
+      '    local e=string.sub(s,i+3,i+3)',
+      '    local v1=map[a] or 0',
+      '    local v2=map[c] or 0',
+      '    local v3=map[d] or 0',
+      '    local v4=map[e] or 0',
+      '    local x=v1*262144+v2*4096+v3*64+v4',
+      '    n=n+1; o[n]=string.char(math.floor(x/65536)%256)',
+      '    if d~="=" and d~="" then n=n+1; o[n]=string.char(math.floor(x/256)%256) end',
+      '    if e~="=" and e~="" then n=n+1; o[n]=string.char(x%256) end',
+      '  end',
+      '  return table.concat(o)',
+      'end',
+
+      'local function ' + nRaw + '()',
       '  local S={}',
-      '  for i=0,255 do S[i]=i end',
+      '  for n=0,255 do S[n]=n end',
       '  local j=0',
-      '  for i=0,255 do j=(j+S[i]+' + nKey + '[(i%#' + nKey + ')+1])%256; S[i],S[j]=S[j],S[i] end',
-      '  local raw=game and (function() local HttpService=game:GetService("HttpService") return HttpService:Base64Decode(' + nData + ') end)() or (function()',
-      '    local b="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"',
-      '    local m={}; for i=1,#b do m[string.sub(b,i,i)]=i-1 end',
-      '    local o,n={},0; local s=' + nData,
-      '    for i=1,#s,4 do',
-      '      local a=string.sub(s,i,i); local c=string.sub(s,i+1,i+1); local d=string.sub(s,i+2,i+2); local e=string.sub(s,i+3,i+3)',
-      '      local v1=m[a] or 0; local v2=m[c] or 0; local v3=m[d] or 0; local v4=m[e] or 0',
-      '      local x=v1*262144+v2*4096+v3*64+v4',
-      '      n=n+1; o[n]=string.char(math.floor(x/65536)%256)',
-      '      if d~="=" and d~="" then n=n+1; o[n]=string.char(math.floor(x/256)%256) end',
-      '      if e~="=" and e~="" then n=n+1; o[n]=string.char(x%256) end',
-      '    end',
-      '    return table.concat(o)',
-      '  end)()',
+      '  for n=0,255 do',
+      '    j=(j+S[n]+' + nKey + '[(n%#' + nKey + ')+1])%256',
+      '    S[n],S[j]=S[j],S[n]',
+      '  end',
+      '  local raw=' + nDec + '(' + nData + ')',
       '  local i,j=0,0',
       '  local out={}',
       '  for n=1,#raw do',
-      '    i=(i+1)%256; j=(j+S[i])%256; S[i],S[j]=S[j],S[i]',
-      '    out[n]=string.char(' + nXor + '(string.byte(raw,n), S[(S[i]+S[j])%256]))',
+      '    i=(i+1)%256',
+      '    j=(j+S[i])%256',
+      '    S[i],S[j]=S[j],S[i]',
+      '    out[n]=string.char(' + nXor + '(string.byte(raw,n),S[(S[i]+S[j])%256]))',
       '  end',
       '  return table.concat(out)',
       'end',
-      'local ' + nFn + ',' + nErr + '=(loadstring or load)(' + nDec + '())',
-      'if type(' + nFn + ')~="function" then error(' + nErr + ' or "outer decode fail") end',
-      'return ' + nFn + '()'
+
+      'local ' + nLoad + '=(loadstring or load)',
+      'if type(' + nLoad + ')~="function" then return end',
+      'local __q_outer_fn,' + nErr + '=' + nLoad + '(' + nRaw + '())',
+      'if type(__q_outer_fn)~="function" then return end',
+      'return __q_outer_fn()'
     ].join('\n');
   }
 
-  // ---------- Public API ----------
-  /**
-   * @param {string} source
-   * @param {object} opts
-   * @param {boolean} [opts.antiTamper=true]
-   * @param {boolean} [opts.envGate=true]
-   * @param {boolean} [opts.outerRc4=false]
-   * @param {boolean} [opts.watermark=true]
-   */
   function obfuscate(source, opts) {
     opts = opts || {};
+
     const antiTamper = opts.antiTamper !== false;
     const envGate = opts.envGate !== false;
     const outerRc4 = !!opts.outerRc4;
     const watermark = opts.watermark !== false;
+    const sequenceShield = opts.sequenceShield !== false;
 
     let payload = String(source || '');
     if (!payload.trim()) throw new Error('Código vacío');
 
-    const header = [];
+    const parts = [];
     if (watermark) {
-      header.push('--[[ SuperObf Pro · multi-layer ]]');
-      header.push('-- build ' + Date.now().toString(36));
-    }
-    if (antiTamper) header.push(ANTI_TAMPER_LUA);
-    if (envGate) header.push(ENV_GATE_LUA);
-
-    const combined = header.join('\n') + '\n' + payload;
-    let packed = polymorphicPack(combined);
-
-    if (outerRc4) {
-      packed = rc4OuterWrap(packed);
+      parts.push('--[[ QyrexObf protected build ]]');
+      parts.push('-- build ' + Date.now().toString(36));
+      parts.push('-- variant ' + randomInt(100000, 999999));
     }
 
+    if (antiTamper) parts.push(ANTI_TAMPER_LUA);
+    if (envGate) parts.push(ENV_GATE_LUA);
+    if (sequenceShield) parts.push(sequenceNoiseLua());
+
+    parts.push(payload);
+
+    let packed = polymorphicPack(parts.join('\n') + '\n');
+    if (outerRc4) packed = rc4OuterWrap(packed);
     return packed;
   }
 
   global.SuperObfPro = {
-    obfuscate: obfuscate,
-    polymorphicPack: polymorphicPack,
-    version: '1.0.0-pro'
+    obfuscate,
+    polymorphicPack,
+    version: '2.0.0-qyrex'
   };
 })(typeof window !== 'undefined' ? window : globalThis);
