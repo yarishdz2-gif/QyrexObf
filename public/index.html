@@ -132,6 +132,9 @@
         <label class="check"><input type="checkbox" id="envGate" checked /> Env Gate</label>
         <label class="check"><input type="checkbox" id="outerRc4" /> Outer RC4 stream</label>
         <label class="check"><input type="checkbox" id="watermark" checked /> Watermark</label>
+        <label class="check"><input type="checkbox" id="robloxOnly" checked /> Roblox-only execution</label>
+        <label class="check"><input type="checkbox" id="primitiveSeal" checked /> Primitive seal</label>
+        <label class="check"><input type="checkbox" id="opaqueNoise" checked /> Opaque noise</label>
       </div>
 
       <div class="layers" id="layerPreview"></div>
@@ -153,7 +156,7 @@
       </div>
     </section>
 
-    <div class="foot">SuperObf Pro · capas: anti-tamper · env-gate · polymorphic pack · RC4 outer (opcional)</div>
+    <div class="foot">SuperObf Pro · capas: anti-tamper · Roblox gate · primitive seal · sequence shield · opaque noise · env-gate · polymorphic pack · RC4 outer (opcional)</div>
   </main>
 
   <script src="obfuscator.js"></script>
@@ -169,7 +172,10 @@
         antiTamper: $('antiTamper').checked,
         envGate: $('envGate').checked,
         outerRc4: $('outerRc4').checked,
-        watermark: $('watermark').checked
+        watermark: $('watermark').checked,
+        robloxOnly: $('robloxOnly').checked,
+        primitiveSeal: $('primitiveSeal').checked,
+        opaqueNoise: $('opaqueNoise').checked
       };
     }
 
@@ -187,7 +193,7 @@
       ).join('');
     }
 
-    ['antiTamper','envGate','outerRc4','watermark'].forEach(id => {
+    ['antiTamper','envGate','outerRc4','watermark','robloxOnly','primitiveSeal','opaqueNoise'].forEach(id => {
       $(id).addEventListener('change', refreshLayers);
     });
     refreshLayers();
