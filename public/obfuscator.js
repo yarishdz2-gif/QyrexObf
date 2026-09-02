@@ -300,9 +300,18 @@ end
     }
 
     const stdB64 = bytesToBase64(encrypted);
-    const alphabet = shuffleArray(
-      'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'.split('')
-    ).join('');
+
+    // Qyrex printable Base64 alphabet. It deliberately uses a dense mix of
+    // punctuation/letters/digits so the payload does not resemble ordinary
+    // Base64, while remaining a normal 64-symbol substitution alphabet.
+    // Excludes Lua string delimiters and whitespace for safe embedding.
+    const printableAlphabet =
+      '!#$%&()*+,-./:;<>?@[]^_`{|}~' +
+      'ABCDEFGHIJKLMNOPQR' +
+      'abcdefghij' +
+      '01234567';
+
+    const alphabet = shuffleArray(printableAlphabet.split('')).join('');
     const encoded = replaceAlphabet(stdB64, alphabet);
 
     const chunks = [];
@@ -455,8 +464,16 @@ end
       out[n] = plain[n] ^ S[(S[i] + S[j]) & 255];
     }
 
-    const b64 = bytesToBase64(out);
+    const b64Standard = bytesToBase64(out);
+    const outerAlphabet = shuffleArray((
+      '!#$%&()*+,-./:;<>?@[]^_`{|}~' +
+      'ABCDEFGHIJKLMNOPQR' +
+      'abcdefghij' +
+      '01234567'
+    ).split('')).join('');
+    const b64 = replaceAlphabet(b64Standard, outerAlphabet);
     const nKey = luaId('k');
+    const nAlpha = luaId('a');
     const nData = luaId('d');
     const nXor = luaId('x');
     const nDec = luaId('u');
@@ -485,7 +502,8 @@ end
       'local function ' + nDec + '(s)',
       '  local map={}',
       '  local b="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"',
-      '  for i=1,#b do map[string.sub(b,i,i)]=i-1 end',
+      '  local aa=' + nAlpha,
+      '  for i=1,#aa do map[string.sub(aa,i,i)]=i-1 end',
       '  local o,n={},0',
       '  for i=1,#s,4 do',
       '    local a=string.sub(s,i,i)',
@@ -574,6 +592,6 @@ end
   global.SuperObfPro = {
     obfuscate,
     polymorphicPack,
-    version: '2.1.0-qyrex'
+    version: '2.2.0-qyrex-custom64'
   };
 })(typeof window !== 'undefined' ? window : globalThis);
