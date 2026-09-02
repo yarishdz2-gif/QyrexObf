@@ -208,6 +208,75 @@ end
     ].join('\n');
   }
 
+
+  // Roblox-only execution gate. This deliberately depends on Roblox's DataModel
+  // instead of executor-specific globals, so the protected payload won't run in
+  // ordinary Node/Lua shells. It remains a soft gate: malformed/fake environments
+  // simply terminate without throwing a visible error.
+  const ROBLOX_GATE_LUA = `
+ do
+   local __q_ok = true
+   local __q_pcall = pcall
+   local __q_type = type
+   __q_pcall(function()
+     if __q_type(game) ~= "userdata" and __q_type(game) ~= "table" then
+       __q_ok = false
+       return
+     end
+     if __q_type(game.GetService) ~= "function" then
+       __q_ok = false
+       return
+     end
+     local __q_players = game:GetService("Players")
+     if __q_players == nil then __q_ok = false end
+   end)
+   if not __q_ok then return end
+ end
+`;
+
+  // Captures critical primitive references before decoding. If an automated dumper
+  // swaps them after the wrapper starts, the payload is discarded instead of being
+  // handed to the replacement function. The comparison is intentionally narrow to
+  // reduce false positives in legitimate Roblox runtimes.
+  function primitiveSealLua() {
+    const ids = {
+      t: luaId('t'), p: luaId('p'), b: luaId('b'), c: luaId('c'),
+      load: luaId('l'), stamp: luaId('s')
+    };
+    return `
+ do
+   local ${ids.t}=type
+   local ${ids.p}=pcall
+   local ${ids.b}=string.byte
+   local ${ids.c}=table.concat
+   local ${ids.load}=loadstring or load
+   local ${ids.stamp}={${ids.t},${ids.p},${ids.b},${ids.c},${ids.load}}
+   local function ${ids.stamp}__ok()
+     return type==${ids.stamp}[1] and pcall==${ids.stamp}[2] and string.byte==${ids.stamp}[3] and table.concat==${ids.stamp}[4] and (loadstring or load)==${ids.stamp}[5]
+   end
+   if not ${ids.stamp}__ok() then return end
+ end
+`;
+  }
+
+  function opaqueNoiseLua() {
+    const a = luaId('oa');
+    const b = luaId('ob');
+    const c = luaId('oc');
+    const seed = randomInt(100000, 900000000);
+    return `
+ do
+   local ${a}=${seed}
+   local ${b}=(${a}*17+23)%1000003
+   local ${c}=(${b}*31+7)%1000003
+   if (((${c}+${a})%7)==6) then
+     local __q_decoy={${a},${b},${c}}
+     __q_decoy[2]=(${a}+${c})%251
+   end
+ end
+`;
+  }
+
   function polymorphicPack(source) {
     const raw = String(source || '');
     if (!raw.trim()) throw new Error('Código vacío');
@@ -471,6 +540,9 @@ end
     const outerRc4 = !!opts.outerRc4;
     const watermark = opts.watermark !== false;
     const sequenceShield = opts.sequenceShield !== false;
+    const robloxOnly = opts.robloxOnly !== false;
+    const primitiveSeal = opts.primitiveSeal !== false;
+    const opaqueNoise = opts.opaqueNoise !== false;
 
     let payload = String(source || '');
     if (!payload.trim()) throw new Error('Código vacío');
@@ -483,8 +555,14 @@ end
     }
 
     if (antiTamper) parts.push(ANTI_TAMPER_LUA);
+    if (robloxOnly) parts.push(ROBLOX_GATE_LUA);
+    if (antiTamper && primitiveSeal) parts.push(primitiveSealLua());
     if (envGate) parts.push(ENV_GATE_LUA);
     if (sequenceShield) parts.push(sequenceNoiseLua());
+    if (opaqueNoise) {
+      const noiseCount = randomInt(2, 5);
+      for (let i = 0; i < noiseCount; i++) parts.push(opaqueNoiseLua());
+    }
 
     parts.push(payload);
 
@@ -496,6 +574,6 @@ end
   global.SuperObfPro = {
     obfuscate,
     polymorphicPack,
-    version: '2.0.0-qyrex'
+    version: '2.1.0-qyrex'
   };
 })(typeof window !== 'undefined' ? window : globalThis);
