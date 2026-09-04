@@ -1,16 +1,25 @@
 {
-  "name": "super-obf-pro",
-  "version": "1.0.0",
-  "description": "SuperObf Pro - multi-layer Lua/Luau obfuscator",
-  "main": "server.js",
+  "name": "qyrexobf",
+  "version": "2.0.0",
+  "description": "Qyrexobf \u2014 advanced multi-layer JavaScript obfuscator",
+  "main": "core/index.js",
+  "type": "module",
+  "bin": {
+    "qyrexobf": "./cli/index.js"
+  },
   "scripts": {
-    "start": "node server.js",
-    "build": "echo 'No build step required'"
+    "obfuscate": "node cli/index.js",
+    "test": "node test/runner.js"
   },
+  "keywords": [
+    "obfuscator",
+    "javascript",
+    "qyrexobf",
+    "code-protection"
+  ],
+  "author": "Qyrex",
+  "license": "MIT",
   "engines": {
-    "node": ">=18"
-  },
-  "dependencies": {
-    "express": "^4.21.2"
+    "node": ">=16.0.0"
   }
 }
